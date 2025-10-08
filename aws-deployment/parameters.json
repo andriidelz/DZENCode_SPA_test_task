@@ -1,0 +1,66 @@
+{
+  "Infrastructure": [
+    {
+      "ParameterKey": "ProjectName",
+      "ParameterValue": "comments-system"
+    },
+    {
+      "ParameterKey": "Environment",
+      "ParameterValue": "production"
+    },
+    {
+      "ParameterKey": "DBUsername",
+      "ParameterValue": "comments_admin"
+    },
+    {
+      "ParameterKey": "DBPassword",
+      "ParameterValue": "REPLACE_WITH_SECURE_PASSWORD"
+    },
+    {
+      "ParameterKey": "DomainName",
+      "ParameterValue": "comments.example.com"
+    }
+  ],
+  "Services": [
+    {
+      "ParameterKey": "ProjectName",
+      "ParameterValue": "comments-system"
+    },
+    {
+      "ParameterKey": "Environment",
+      "ParameterValue": "production"
+    },
+    {
+      "ParameterKey": "BackendImageURI",
+      "ParameterValue": "REPLACE_WITH_BACKEND_ECR_URI"
+    },
+    {
+      "ParameterKey": "FrontendImageURI",
+      "ParameterValue": "REPLACE_WITH_FRONTEND_ECR_URI"
+    },
+    {
+      "ParameterKey": "DatabaseEndpoint",
+      "ParameterValue": "REPLACE_WITH_DB_ENDPOINT"
+    },
+    {
+      "ParameterKey": "RedisEndpoint",
+      "ParameterValue": "REPLACE_WITH_REDIS_ENDPOINT"
+    },
+    {
+      "ParameterKey": "DBUsername",
+      "ParameterValue": "comments_admin"
+    },
+    {
+      "ParameterKey": "DBPassword",
+      "ParameterValue": "REPLACE_WITH_SECURE_PASSWORD"
+    },
+    {
+      "ParameterKey": "DjangoSecretKey",
+      "ParameterValue": "REPLACE_WITH_DJANGO_SECRET_KEY"
+    },
+    {
+      "ParameterKey": "S3BucketName",
+      "ParameterValue": "REPLACE_WITH_S3_BUCKET_NAME"
+    }
+  ]
+}

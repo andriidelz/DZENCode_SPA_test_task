@@ -1,0 +1,374 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'ECS Services for Comments System'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'comments-system'
+    Description: 'Name of the project for resource naming'
+  
+  Environment:
+    Type: String
+    Default: 'production'
+    Description: 'Environment name'
+  
+  BackendImageURI:
+    Type: String
+    Description: 'Backend Docker image URI from ECR'
+  
+  FrontendImageURI:
+    Type: String
+    Description: 'Frontend Docker image URI from ECR'
+  
+  DatabaseEndpoint:
+    Type: String
+    Description: 'RDS PostgreSQL endpoint'
+  
+  RedisEndpoint:
+    Type: String
+    Description: 'ElastiCache Redis endpoint'
+  
+  DBUsername:
+    Type: String
+    Default: 'comments_admin'
+    Description: 'Database username'
+  
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Description: 'Database password'
+  
+  DjangoSecretKey:
+    Type: String
+    NoEcho: true
+    Description: 'Django secret key'
+  
+  S3BucketName:
+    Type: String
+    Description: 'S3 bucket name for static files'
+
+Resources:
+  # Target Groups
+  BackendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-backend-tg'
+      Port: 8000
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-vpc-id'
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /api/health/
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-backend-tg'
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ProjectName}-${Environment}-frontend-tg'
+      Port: 80
+      Protocol: HTTP
+      VpcId:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-vpc-id'
+      TargetType: ip
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-frontend-tg'
+
+  # ALB Listener
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+      LoadBalancerArn:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-alb-arn'
+      Port: 80
+      Protocol: HTTP
+
+  # ALB Listener Rules
+  BackendListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref BackendTargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - /api/*
+            - /admin/*
+            - /static/*
+            - /media/*
+      ListenerArn: !Ref ALBListener
+      Priority: 100
+
+  # ECS Task Definitions
+  BackendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-${Environment}-backend'
+      Cpu: '512'
+      Memory: '1024'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-execution-role-arn'
+      TaskRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-task-role-arn'
+      ContainerDefinitions:
+        - Name: backend
+          Image: !Ref BackendImageURI
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8000
+              Protocol: tcp
+          Environment:
+            - Name: DJANGO_SETTINGS_MODULE
+              Value: comments_project.settings.production
+            - Name: DEBUG
+              Value: 'False'
+            - Name: ALLOWED_HOSTS
+              Value: '*'
+            - Name: DATABASE_URL
+              Value: !Sub 'postgresql://${DBUsername}:${DBPassword}@${DatabaseEndpoint}:5432/comments_db'
+            - Name: REDIS_URL
+              Value: !Sub 'redis://${RedisEndpoint}:6379/0'
+            - Name: SECRET_KEY
+              Value: !Ref DjangoSecretKey
+            - Name: AWS_STORAGE_BUCKET_NAME
+              Value: !Ref S3BucketName
+            - Name: AWS_S3_REGION_NAME
+              Value: !Ref 'AWS::Region'
+            - Name: USE_S3
+              Value: 'True'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub '/ecs/${ProjectName}-${Environment}-backend'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'curl -f http://localhost:8000/api/health/ || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-backend-task'
+
+  FrontendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${ProjectName}-${Environment}-frontend'
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-execution-role-arn'
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Ref FrontendImageURI
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          Environment:
+            - Name: NODE_ENV
+              Value: production
+            - Name: VUE_APP_API_BASE_URL
+              Value: /api
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub '/ecs/${ProjectName}-${Environment}-frontend'
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - 'curl -f http://localhost:80/ || exit 1'
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 30
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-frontend-task'
+
+  # ECS Services
+  BackendService:
+    Type: AWS::ECS::Service
+    DependsOn: BackendListenerRule
+    Properties:
+      ServiceName: !Sub '${ProjectName}-${Environment}-backend'
+      Cluster:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+      LaunchType: FARGATE
+      DesiredCount: 2
+      TaskDefinition: !Ref BackendTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-security-group-id'
+          Subnets:
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-private-subnet-1-id'
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-private-subnet-2-id'
+      LoadBalancers:
+        - ContainerName: backend
+          ContainerPort: 8000
+          TargetGroupArn: !Ref BackendTargetGroup
+      HealthCheckGracePeriodSeconds: 300
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableExecuteCommand: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-backend-service'
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: !Sub '${ProjectName}-${Environment}-frontend'
+      Cluster:
+        Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-cluster-name'
+      LaunchType: FARGATE
+      DesiredCount: 2
+      TaskDefinition: !Ref FrontendTaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          SecurityGroups:
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-ecs-security-group-id'
+          Subnets:
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-private-subnet-1-id'
+            - Fn::ImportValue: !Sub '${ProjectName}-${Environment}-private-subnet-2-id'
+      LoadBalancers:
+        - ContainerName: frontend
+          ContainerPort: 80
+          TargetGroupArn: !Ref FrontendTargetGroup
+      HealthCheckGracePeriodSeconds: 300
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+      EnableExecuteCommand: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ProjectName}-${Environment}-frontend-service'
+
+  # Auto Scaling
+  BackendAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub 'service/${ProjectName}-${Environment}-cluster/${ProjectName}-${Environment}-backend'
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 10
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+    DependsOn: BackendService
+
+  BackendAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-backend-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref BackendAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+
+  FrontendAutoScalingTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub 'service/${ProjectName}-${Environment}-cluster/${ProjectName}-${Environment}-frontend'
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: 1
+      MaxCapacity: 5
+      RoleARN: !Sub 'arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.application-autoscaling.amazonaws.com/AWSServiceRoleForApplicationAutoScaling_ECSService'
+    DependsOn: FrontendService
+
+  FrontendAutoScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub '${ProjectName}-${Environment}-frontend-scaling-policy'
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref FrontendAutoScalingTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: 70
+        ScaleOutCooldown: 300
+        ScaleInCooldown: 300
+
+Outputs:
+  BackendServiceArn:
+    Description: 'Backend ECS Service ARN'
+    Value: !Ref BackendService
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-backend-service-arn'
+
+  FrontendServiceArn:
+    Description: 'Frontend ECS Service ARN'
+    Value: !Ref FrontendService
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-frontend-service-arn'
+
+  BackendTargetGroupArn:
+    Description: 'Backend Target Group ARN'
+    Value: !Ref BackendTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-backend-tg-arn'
+
+  FrontendTargetGroupArn:
+    Description: 'Frontend Target Group ARN'
+    Value: !Ref FrontendTargetGroup
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-frontend-tg-arn'
+
+  ApplicationURL:
+    Description: 'Application URL'
+    Value: !Sub
+      - 'http://${ALBDNSName}'
+      - ALBDNSName:
+          Fn::ImportValue: !Sub '${ProjectName}-${Environment}-alb-dns'
+    Export:
+      Name: !Sub '${ProjectName}-${Environment}-app-url'
